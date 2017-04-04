@@ -17,6 +17,7 @@ import tensorflow as tf
 # Local imports.
 from ..AgentClass import Agent
 
+# TODO: Make ReplayMemory, update Gym MDP + State classes, test
 class DeepQNetworkAgent(Agent):
     '''
     Agent that uses a deep convolutional neural network as a nonlinear Q-function approximator.
@@ -53,6 +54,7 @@ class DeepQNetworkAgent(Agent):
         self.state_shape = state_shape
         self.state_dtype = state_dtype
         self.num_actions = num_actions
+        self.action_counter = 0
         self.gamma = gamma
         self.learning_rate = learning_rate
         self.batch_size = batch_size
@@ -95,8 +97,50 @@ class DeepQNetworkAgent(Agent):
 
         return loss
 
+    def get_max_q_action(self, state):
+        q_values = self.sess.run(self.main_network, feed_dict={self.state: [state]})
+        return np.argmax(q_values[0])
+
+    def epsilon_greedy_q_policy(self, state):
+        # Policy: Epsilon of the time explore, otherwise, greedyQ.
+        if np.random.random() > self.epsilon:
+            # Exploit.
+            action = self.get_max_q_action(state)
+        else:
+            # Explore
+            action = np.random.choice(range(self.num_actions))
+
+        return action
+
     def act(self, state, reward):
-        # TODOs: Write this method with all DQN logic, write new ReplayMemory, test
+        # Select action according to an epsilon-greedy Q-policy
+        action = self.epsilon_greedy_q_policy(state)
+
+        # If we have a complete s, a, r, s', t tuple
+        if self.prev_state and self.prev_action:
+            # Perform epsilon annealing
+            if self.replay_buffer.size() > self.replay_memory_start:
+                self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_delta)
+
+            next_state, is_terminal = state, state.is_terminal()
+            state, action = self.prev_state, self.prev_action
+
+            # Add most recent experience to replay memory
+            self.replay_buffer.append(state[-1], action, reward, is_terminal)
+
+            # Perform a single update step on the network
+            if (self.replay_buffer.size() > self.replay_memory_start) and (self.action_counter % self.update_freq == 0):
+                loss = self.run_update_step()
+
+            # Copy main network weights over to the target network when appropriate
+            if (self.action_counter - self.replay_memory_start) % self.target_copy_freq == 0:
+                self.sess.run(self.target_update_op)
+
+        self.prev_state = state
+        self.prev_action = action
+        self.action_counter += 1
+        return action
+
 
     # ---------------------------------
     # ---- TENSORFLOW ----
@@ -113,7 +157,7 @@ class DeepQNetworkAgent(Agent):
             W = tf.get_variable('W', [kernel, kernel, num_in_filters, num_out_filters],
                                 initializer=tf.contrib.layers.xavier_initializer())
             B = tf.get_variable('B', [num_out_filters], initializer=tf.constant_initializer(0.0))
-        conv_out = rectifier(tf.nn.conv2d(input, W, [1, stride, stride, 1], 'VALID') + B)
+        conv_out = rectifier(tf.nn.conv2d(input, W, strides=[1, stride, stride, 1], padding='SAME') + B)
         return conv_out
 
     def fully_connected(self, input, num_outputs, rectifier=lambda x:x):
@@ -125,9 +169,9 @@ class DeepQNetworkAgent(Agent):
         return fc
 
     def init_placeholders(self):
-        self.state = tf.placeholder(self.state_dtype, self.state_shape)
+        self.state = tf.placeholder(self.state_dtype, [None] + list(self.state_shape) + [self.history_size])
         self.action = tf.placeholder(tf.float32, [None, self.num_actions])
-        self.next_state = tf.placeholder(self.state_dtype, self.state_shape)
+        self.next_state = tf.placeholder(self.state_dtype,  [None] + list(self.state_shape) + [self.history_size])
         self.terminal = tf.placeholder(tf.bool, [None])
         self.reward = tf.placeholder(tf.float32, [None])
 
@@ -191,8 +235,36 @@ class ReplayMemory():
             self.full = True
         self.index = (self.index + 1) % self.capacity
 
+    def get_index_sample(self, ind):
+        state_terms = self.terms[ind-self.history:ind]
+        # Until we can get history number of consecutive frames with no interrupting terminal states
+        while state_terms.any() or not state_terms[-1]:
+            ind -= 1
+            state_terms = self.terms[ind - self.history:ind]
+
+        state = np.transpose(self.obs[ind-self.history:ind], self.numpy_transpose_shape)
+        next_state = np.transpose(self.obs[ind-self.history+1:ind+1], self.numpy_transpose_shape)
+        return state, self.actions[ind], self.rewards[ind], next_state, self.terms[ind]
+
     def sample(self, num_samples):
-        pass
+        if not self.full:
+            # Only attempt to sample the data we have
+            idx = np.random.randint(self.history-1, self.index, size=num_samples)
+        else:
+            # Otherwise, avoid hitting the end of the buffer
+            idx = np.random.randint(self.history - 1, self.capacity, size=num_samples)
+            # idx = idx - self.index - self.history - 1
+            # idx = idx % self.capacity
+        idx = list(idx)
+
+        batch = [self.get_index_sample(x) for x in idx]
+        batch_states = np.array([_[0] for _ in batch])
+        batch_actions = np.array([_[1] for _ in batch])
+        batch_rewards = np.array([_[2] for _ in batch])
+        batch_next_states = np.array([_[3] for _ in batch])
+        batch_terminals = np.array([_[4] for _ in batch])
+
+        return batch_states, batch_actions, batch_rewards, batch_next_states, batch_terminals
 
     def size(self):
         return self.capacity if self.full else self.index
