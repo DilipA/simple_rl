@@ -18,5 +18,6 @@ from MCTSAgentClass import MCTSAgent
 
 from func_approx.LinearApproxQLearnerAgentClass import LinearApproxQLearnerAgent
 from func_approx.LinearApproxSarsaAgentClass import LinearApproxSarsaAgent
+from func_approx.DeepQNetworkAgentClass import DeepQNetworkAgent
 # from func_approx.GradientBoostingAgentClass import GradientBoostingAgent
 # from bandits.LinUCBAgentClass import LinUCBAgent

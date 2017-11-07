@@ -15,9 +15,13 @@ import numpy as np
 import tensorflow as tf
 
 # Local imports.
-from ..AgentClass import Agent
 
 # TODO: Make ReplayMemory, update Gym MDP + State classes, test
+from simple_rl.agents import Agent
+from simple_rl.run_experiments import run_agents_on_mdp
+from simple_rl.tasks.gym.GymImageMDP import GymImageMDP
+
+
 class DeepQNetworkAgent(Agent):
     '''
     Agent that uses a deep convolutional neural network as a nonlinear Q-function approximator.
@@ -147,7 +151,7 @@ class DeepQNetworkAgent(Agent):
     # ---------------------------------
 
     def get_variables_with_scope(self, *scopes):
-        return map(lambda x: tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=x+'/'), scopes)
+        return map(lambda x: tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=x+'/'), scopes)[0]
 
     def swap_variables(self, source_scope, dest_scope):
         return [tf.assign(dv, sv) for sv, dv in zip(self.get_variables_with_scope(source_scope), self.get_variables_with_scope(dest_scope))]
@@ -186,7 +190,7 @@ class DeepQNetworkAgent(Agent):
         self.clipped_reward = tf.minimum(tf.maximum(self.reward, tf.constant(1.0)), tf.constant(-1.0))
         is_terminal = tf.cast(tf.logical_not(self.terminal), dtype=tf.float32)
         self.maxQ = tf.reduce_max(self.target_network, reduction_indices=1)
-        self.td_zero_target = self.r + is_terminal * self.gamma * self.maxQ
+        self.td_zero_target = self.reward + is_terminal * self.gamma * self.maxQ
         self.td_zero_error  = tf.reduce_sum(self.action * self.main_network, reduction_indices=1) - self.td_zero_target
         self.clipped_error = tf.where(tf.abs(self.td_zero_error) < self.error_clip, 0.5 * tf.square(self.td_zero_error),
                                       self.error_clip * tf.abs(self.td_zero_error))
@@ -202,7 +206,7 @@ class DeepQNetworkAgent(Agent):
             c2 = self.conv2d(c1, kernel=4, stride=2, num_in_filters=32, num_out_filters=64, rectifier=tf.nn.relu)
         with tf.variable_scope('C3'):
             c3 = self.conv2d(c2, kernel=3, stride=1, num_in_filters=64, num_out_filters=64, rectifier=tf.nn.relu)
-            c3 = tf.reshape(c3, [-1] + reduce(lambda x,y: x * y, c3.get_shape().as_list()[1:]))
+            c3 = tf.reshape(c3, [-1] + [reduce(lambda x, y: x * y, c3.get_shape().as_list()[1:])])
         with tf.variable_scope('FC1'):
             fc1 = self.fully_connected(c3, num_outputs=512, rectifier=tf.nn.relu)
         with tf.variable_scope('O'):
@@ -268,3 +272,8 @@ class ReplayMemory():
 
     def size(self):
         return self.capacity if self.full else self.index
+
+if __name__ == '__main__':
+    dqn_agent = DeepQNetworkAgent([84, 84], np.float32, 4)
+    mdp = GymImageMDP(render=True)
+    run_agents_on_mdp([dqn_agent], mdp, num_instances=1, num_episodes=1, num_steps=1000000)
